@@ -20,30 +20,37 @@ struct scara_stepper {
     bool arm_mode;
 };
 
+static double 
+square(double a)
+{
+    double a2 = a*a;
+    return a2;
+}
 // Calculate arm poitions
 static double
+
 scara_pos_to_angle(double dx, double dy, double proximal_length, double distal_length,
                     double crosstalk, bool arm_mode, bool arm_type)
 {
-    const float cosPsi = (fsquare(dx) + fsquare(dy) - fsquare(proximal_length) - fsquare(distal_length)) / (2 * proximal_length * distal_length);
-    float square = 1.0 - fsquare(cosPsi);
-    float psi = acosf(cosPsi);
-    float theta = 0;
-    const float sinPsi = sqrtf(square);
-    const float sk_1 = proximal_length + distal_length * cosPsi;
-    const float sk_2 = distal_length * sinPsi;
+    const double cosPsi = (square(dx) + square(dy) - square(proximal_length) - square(distal_length)) / (2 * proximal_length * distal_length);
+    double square = 1.0 - square(cosPsi);
+    double psi = acos(cosPsi);
+    double theta = 0;
+    const double sinPsi = sqrt(square);
+    const double sk_1 = proximal_length + distal_length * cosPsi;
+    const double sk_2 = distal_length * sinPsi;
 
     if (arm_mode)
     {       
-        theta = atan2f(sk_1 * dy - sk_2 * dx, sk_1 * dx + sk_2 * dy);
+        theta = atan2(sk_1 * dy - sk_2 * dx, sk_1 * dx + sk_2 * dy);
     }
     else
     {
-        theta = atan2f(sk_1 * dy + sk_2 * dx, sk_1 * dx - sk_2 * dy);
+        theta = atan2(sk_1 * dy + sk_2 * dx, sk_1 * dx - sk_2 * dy);
         psi = -psi;
     }
-    float x_angle = theta;
-    float y_angle = psi - (crosstalk * theta);
+    double x_angle = theta;
+    double y_angle = psi - (crosstalk * theta);
     if (arm_type)
     {
         return x_angle;
