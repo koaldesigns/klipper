@@ -82,7 +82,7 @@ scara_stepper_alloc(char arm,
     fs->distal_length = distal_length;
     fs->crosstalk = crosstalk;
     fs->arm_mode = arm_mode;
-    if (arm == 'p')
+    if (a rm == 'p')
     {
         fs->arm_type = bool true
     } 
