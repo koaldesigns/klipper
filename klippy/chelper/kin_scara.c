@@ -17,7 +17,8 @@ struct scara_stepper {
     double proximal_length;
     double distal_length;
     double crosstalk;
-    bool arm_mode;
+    int arm_mode;
+    int arm_type;
 };
 
 static double 
@@ -26,17 +27,17 @@ square(double a)
     double a2 = a*a;
     return a2;
 }
+
 // Calculate arm poitions
 static double
-
 scara_pos_to_angle(double dx, double dy, double proximal_length, double distal_length,
-                    double crosstalk, bool arm_mode, bool arm_type)
+                    double crosstalk, int arm_mode, int arm_type)
 {
     const double cosPsi = (square(dx) + square(dy) - square(proximal_length) - square(distal_length)) / (2 * proximal_length * distal_length);
-    double square = 1.0 - square(cosPsi);
+    double square1 = 1.0 - square(cosPsi);
     double psi = acos(cosPsi);
     double theta = 0;
-    const double sinPsi = sqrt(square);
+    const double sinPsi = sqrt(square1);
     const double sk_1 = proximal_length + distal_length * cosPsi;
     const double sk_2 = distal_length * sinPsi;
 
@@ -49,46 +50,56 @@ scara_pos_to_angle(double dx, double dy, double proximal_length, double distal_l
         theta = atan2(sk_1 * dy + sk_2 * dx, sk_1 * dx - sk_2 * dy);
         psi = -psi;
     }
-    double x_angle = theta;
-    double y_angle = psi - (crosstalk * theta);
+    double d_angle = theta;
+    double p_angle = psi - (crosstalk * theta);
     if (arm_type)
     {
-        return x_angle;
+        return d_angle;
     }
     else
     {
-        return y_angle;
+        return p_angle;
     }
 }
 
 static double
-scara_stepper_calc_position(struct stepper_kinematics *sk, struct move *m, double move_time)
+scara_proximal_stepper_position(struct stepper_kinematics *sk, struct move *m, double move_time)
 {
     struct coord c = move_get_coord(m, move_time);
-    double motor_pos = scara_pos_to_angle(c.x, c.y, fs->proximal_length, fs->distal_length,
-                                            fs->crosstalk, fs->arm_mode, fs->arm_type);
-    return motor_pos;                                   
+    struct scara_stepper *fs = container_of(sk, struct scara_stepper, sk);
+    double angle = scara_pos_to_angle(c.x, c.y, fs->proximal_length, fs->distal_length,
+                                            fs->crosstalk, fs->arm_mode, 0);
+    return angle;                                   
+}
+
+static double
+scara_distal_stepper_position(struct stepper_kinematics *sk, struct move *m, double move_time)
+{
+    struct coord c = move_get_coord(m, move_time);
+    struct scara_stepper *fs = container_of(sk, struct scara_stepper, sk);
+    double angle = scara_pos_to_angle(c.x, c.y, fs->proximal_length, fs->distal_length,
+                                            fs->crosstalk, fs->arm_mode, 1);
+    return angle;                                   
 }
 
 struct stepper_kinematics * __visible
 scara_stepper_alloc(char arm,
                     double proximal_length, double distal_length,
-                    double crosstalk, double arm_mode)
+                    double crosstalk, int arm_mode)
 {
-    struct scara_stepper *f = malloc(sizeof(*fs));
-    memset(fs, 0, sizeof(*fss));
-    fs->sk.calc_position_cb = scara_stepper_calc_position;
+    struct scara_stepper *fs = malloc(sizeof(*fs));
+    memset(fs, 0, sizeof(*fs));
     fs->proximal_length = proximal_length;
     fs->distal_length = distal_length;
     fs->crosstalk = crosstalk;
     fs->arm_mode = arm_mode;
     if (arm == 'p')
     {
-        fs->arm_type = bool true
+        fs->sk.calc_position_cb = scara_proximal_stepper_position;
     } 
     else if (arm == 'd')
     {
-        fs->arm_type = bool false
+        fs->sk.calc_position_cb = scara_distal_stepper_position;
     }
     fs->sk.active_flags = AF_X | AF_Y;
     return &fs->sk;
