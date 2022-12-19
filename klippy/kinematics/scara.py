@@ -8,21 +8,30 @@ import stepper, mathutil, chelper
 
 class ScaraKinematics:
     def __init__(self, toolhead, config):
-        # Setup arm rails and z rail
+        # don't know why the config was read AFTER the steppers were set up but I fixed it
+        self.crosstalk = config.getfloat('pd_crosstalk_factor')
+        #TODO: get actual values from hardware team
+        self.theta_limits = config.getfloatlist('theta_limits')
+        self.psi_limits = config.getfloatlist('psi_limits')
+        self.min_radius = config.getfloat('minimum_radius')
+        self.arm_mode = config.getint('arm_mode') #left or right handed
+        
+        #TODO: Might have to change PrinterRail to PritnerStepper, don't know yet
+        # Proximal arm
         rail_proximal = stepper.PrinterRail(config.getsection('stepper_proximal'),
                                              units_in_radians=True)
-        self.proximal_length = rail_proximal.getfloat('proximal_length', above=0.)
+        self.proximal_length = rail_proximal.getfloat('position_max')
         rail_proximal.setup_itersolve(
-            'scara_stepper_alloc', 'p',
+            'scara_stepper_alloc', 'p'.encode(),
             self.proximal_length, self.distal_length, self.crosstalk, self.arm_mode)
-
+        # Distal arm
         rail_distal = stepper.PrinterRail(config.getsection('stepper_distal'),
                                              units_in_radians=True)
-        self.distal_length = rail_distal.getfloat('distal_length', above=0.)
+        self.distal_length = rail_distal.getfloat('position_max')
         rail_distal.setup_itersolve(
-            'scara_stepper_alloc', 'd',
+            'scara_stepper_alloc', 'd'.encode(),
             self.proximal_length, self.distal_length, self.crosstalk, self.arm_mode)
-
+        # Z axis
         rail_z = stepper.LookupMultiRail(config.getsection('stepper_z'))
         rail_z.setup_itersolve('cartesian_stepper_alloc', 'z')
 
@@ -43,7 +52,7 @@ class ScaraKinematics:
         self.limit_z = (1.0, -1.0)
         self.XY_homed = False
 
-        # Homing trickery to fake cartesian kinematics
+        # Homing trickery to fake cartesian kinematics, might be errors here
         self.printer = config.get_printer()
         ffi_main, ffi_lib = chelper.get_ffi()
         self.cartesian_kinematics_P = ffi_main.gc(
@@ -55,11 +64,6 @@ class ScaraKinematics:
                      self.proximal_length, self.distal_length)
 
         # Read config
-        self.crosstalk = config.getfloat('xy_crosstalk_factor')
-        self.theta_limits = config.getfloatlist('theta_limits')
-        self.psi_limits = config.getfloatlist('psi_limits')
-        self.min_radius = config.getfloat('minimum_radius')
-        self.arm_mode = config.getbool('arm_mode')
         if self.min_radius == None:
             self.min_radius = self.proximal_length - self.distal_length
             if self.min_radius <= 0:
@@ -77,7 +81,7 @@ class ScaraKinematics:
     def calc_position(self, stepper_positions):
         # Converts stepper positioning to cartesian coordinates
         theta = stepper_positions[self.rails[0].get_name()]
-        psi = stepper_positions[self.rails[1].get_name()] * (self.crosstalk[0] * theta)
+        psi = stepper_positions[self.rails[1].get_name()] * (self.crosstalk * theta)
         x_pos = (math.acos(theta) * self.proximal_length) + (math.acos(psi + theta) * self.distal_length)
         y_pos = (math.asin(theta) * self.proximal_length) + (math.asin(psi + theta) * self.distal_length)
         z_pos = stepper_positions[self.rails[2].get_name()]
@@ -101,6 +105,7 @@ class ScaraKinematics:
     def home(self, homing_state):
         # Always home X/Y = Prox/Dist together
         # How to specify rotational homing which is not the theta/psi angle 0?
+        # See below home_rails modifications
         homing_axes = homing_state.get_axes()
         logging.info('Homing: %s', homing_axes)
         home_xy = 0 in homing_axes or 1 in homing_axes
@@ -162,6 +167,61 @@ class ScaraKinematics:
                 forcepos[2] += 1.5 * (z_max - hi.position_endstop)
             homing_state.home_rails([rail], forcepos, homepos)
             logging.info('Z is homed')
+
+#TODO: Must modify home_rails (change name too) so that PD crosstalk is used, else PD relative pos can change
+# while homing, leading to crashes. Might also be able to add homing pos not at limits
+
+    def home_rails(self, rails, forcepos, movepos):
+        # Notify of upcoming homing operation
+        self.printer.send_event("homing:home_rails_begin", self, rails)
+        # Alter kinematics class to think printer is at forcepos
+        homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
+        startpos = self._fill_coord(forcepos)
+        homepos = self._fill_coord(movepos)
+        self.toolhead.set_position(startpos, homing_axes=homing_axes)
+        # Perform first home
+        endstops = [es for rail in rails for es in rail.get_endstops()]
+        hi = rails[0].get_homing_info()
+        hmove = HomingMove(self.printer, endstops)
+        hmove.homing_move(homepos, hi.speed)
+        # Perform second home
+        if hi.retract_dist:
+            # Retract
+            startpos = self._fill_coord(forcepos)
+            homepos = self._fill_coord(movepos)
+            axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
+            move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
+            retract_r = min(1., hi.retract_dist / move_d)
+            retractpos = [hp - ad * retract_r
+                          for hp, ad in zip(homepos, axes_d)]
+            self.toolhead.move(retractpos, hi.retract_speed)
+            # Home again
+            startpos = [rp - ad * retract_r
+                        for rp, ad in zip(retractpos, axes_d)]
+            self.toolhead.set_position(startpos)
+            hmove = HomingMove(self.printer, endstops)
+            hmove.homing_move(homepos, hi.second_homing_speed)
+            if hmove.check_no_movement() is not None:
+                raise self.printer.command_error(
+                    "Endstop %s still triggered after retract"
+                    % (hmove.check_no_movement(),))
+        # Signal home operation complete
+        self.toolhead.flush_step_generation()
+        self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
+                                for sp in hmove.stepper_positions}
+        self.adjust_pos = {}
+        self.printer.send_event("homing:home_rails_end", self, rails)
+        if any(self.adjust_pos.values()):
+            # Apply any homing offsets
+            kin = self.toolhead.get_kinematics()
+            homepos = self.toolhead.get_position()
+            kin_spos = {s.get_name(): (s.get_commanded_position()
+                                       + self.adjust_pos.get(s.get_name(), 0.))
+                        for s in kin.get_steppers()}
+            newpos = kin.calc_position(kin_spos)
+            for axis in homing_axes:
+                homepos[axis] = newpos[axis]
+            self.toolhead.set_position(homepos)
 
     def _motor_off(self, print_time):
         self.XY_homed = False
